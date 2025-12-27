@@ -5119,6 +5119,14 @@ EOF
                     [ -f /dev/netconf/$ethx/table_id ] && table_id=$(cat /dev/netconf/$ethx/table_id)
                     [ -z "$table_id" ] && continue
 
+                    # 多网卡场景：删除 cloud-init 生成的 main 表默认路由，避免冲突
+                    # 只保留策略路由表的默认路由
+                    # 删除 routes 中没有 table 的 default 路由
+                    yq -i "del(.network.ethernets.$ethx.routes[] | select(.to == \"default\" and .table == null))" "$netplan_file" 2>/dev/null || true
+                    # 删除旧版 netplan 的 gateway4/gateway6（已废弃但 cloud-init 可能还会生成）
+                    yq -i "del(.network.ethernets.$ethx.gateway4)" "$netplan_file" 2>/dev/null || true
+                    yq -i "del(.network.ethernets.$ethx.gateway6)" "$netplan_file" 2>/dev/null || true
+
                     # IPv4 策略路由（静态或 DHCP+辅助静态 IP 场景）
                     local ipv4_addrs=""
                     [ -f /dev/netconf/$ethx/ipv4_addrs ] && ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)

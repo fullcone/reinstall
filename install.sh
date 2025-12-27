@@ -455,9 +455,12 @@ main() {
             output=$(port=$current_port add reality 2>&1)
             url=$(echo "$output" | grep "vless://")
             
-            # 替换 URL 中的 IP 地址为对应的公网 IP
+            # 替换 URL 中的 IP 地址为对应的公网 IP（包括链接末尾的别名）
             if [[ -n "$public_ip" ]]; then
+                # 替换 @IP: 部分
                 url=$(echo "$url" | sed "s/@[0-9.]*:/@${public_ip}:/g")
+                # 替换末尾别名中的 IP（格式如 #xxx-tcp-1.2.3.4）
+                url=$(echo "$url" | sed "s/#\(.*-\)[0-9.]*$/#\1${public_ip}/g")
             fi
             
             # 输出到终端
