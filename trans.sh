@@ -2020,6 +2020,85 @@ add_frpc_systemd_service_if_need() {
     fi
 }
 
+add_post_script_if_need() {
+    local os_dir=$1
+
+    if [ -s /configs/post_script_url ]; then
+        local post_script_url=$(cat /configs/post_script_url)
+        info "Adding post-install script: $post_script_url"
+
+        # 创建首次启动执行脚本
+        cat > "$os_dir/usr/local/bin/post-install.sh" <<'SCRIPT_EOF'
+#!/bin/bash
+# 首次启动后执行的脚本
+# 由 reinstall.sh --post-script 参数生成
+
+POST_SCRIPT_URL="__POST_SCRIPT_URL__"
+LOG_FILE="/var/log/post-install.log"
+MARKER_FILE="/var/lib/post-install-done"
+
+# 如果已经执行过，退出
+if [ -f "$MARKER_FILE" ]; then
+    exit 0
+fi
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "$(date): Starting post-install script from $POST_SCRIPT_URL"
+
+# 等待网络就绪
+for i in $(seq 1 30); do
+    if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 || ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1; then
+        echo "Network is ready"
+        break
+    fi
+    echo "Waiting for network... ($i/30)"
+    sleep 2
+done
+
+# 执行用户脚本
+echo "Executing: bash <(wget -qO- '$POST_SCRIPT_URL')"
+if bash <(wget -qO- -o- "$POST_SCRIPT_URL"); then
+    echo "$(date): Post-install script completed successfully"
+else
+    echo "$(date): Post-install script failed with exit code $?"
+fi
+
+# 标记已执行
+touch "$MARKER_FILE"
+
+# 禁用服务（只执行一次）
+systemctl disable post-install.service 2>/dev/null || true
+SCRIPT_EOF
+
+        # 替换 URL
+        sed -i "s|__POST_SCRIPT_URL__|$post_script_url|g" "$os_dir/usr/local/bin/post-install.sh"
+        chmod +x "$os_dir/usr/local/bin/post-install.sh"
+
+        # 创建 systemd 服务
+        cat > "$os_dir/etc/systemd/system/post-install.service" <<'SERVICE_EOF'
+[Unit]
+Description=Post-install script (runs once after first boot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/post-install.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+        # 启用服务
+        mkdir -p "$os_dir/etc/systemd/system/multi-user.target.wants"
+        ln -sf /etc/systemd/system/post-install.service \
+            "$os_dir/etc/systemd/system/multi-user.target.wants/post-install.service"
+
+        echo "Post-install service added"
+    fi
+}
+
 basic_init() {
     os_dir=$1
 
@@ -2078,6 +2157,9 @@ basic_init() {
 
     # frpc
     add_frpc_systemd_service_if_need $os_dir
+
+    # post-script: 首次启动后执行用户自定义脚本
+    add_post_script_if_need $os_dir
 }
 
 install_arch_gentoo_aosc() {

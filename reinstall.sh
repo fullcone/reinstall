@@ -3912,6 +3912,9 @@ This script is outdated, please download reinstall.sh again.
     if [ -n "$frpc_config" ]; then
         cat "$frpc_config" >$initrd_dir/configs/frpc.toml
     fi
+    if [ -n "$post_script_url" ]; then
+        echo "$post_script_url" >$initrd_dir/configs/post_script_url
+    fi
 
     if is_distro_like_debian $nextos_distro; then
         mod_initrd_debian_kali
@@ -4328,6 +4331,11 @@ EOF
         ;;
     --lang)
         lang=$(echo "$2" | to_lower)
+        shift 2
+        ;;
+    --post-script)
+        [ -n "$2" ] || error_and_exit "Need value for $1"
+        post_script_url=$2
         shift 2
         ;;
     --)

@@ -429,11 +429,17 @@ main() {
     local_ips=($(ip -4 addr show | grep -oP '172\.19\.0\.\d+' | sort -u))
     ip_count=${#local_ips[@]}
 
+    # 输出文件
+    output_file="/root/xiaowang.txt"
+    > "$output_file"  # 清空文件
+
     if [[ $ip_count -eq 0 ]]; then
         msg warn "未检测到 172.19.0.* 的 IP，使用默认配置"
         add reality
     else
         msg ok "检测到 ${ip_count} 个 IP: ${local_ips[*]}"
+        echo "检测到 ${ip_count} 个 IP: ${local_ips[*]}" >> "$output_file"
+        echo "" >> "$output_file"
         
         # 用 233boy 的 add reality 创建配置，只输出 URL
         start_port=446
@@ -454,10 +460,18 @@ main() {
                 url=$(echo "$url" | sed "s/@[0-9.]*:/@${public_ip}:/g")
             fi
             
+            # 输出到终端
             echo "端口 ${current_port} -> ${local_ip} -> ${public_ip}"
             echo "$url"
             echo ""
+            
+            # 保存到文件
+            echo "端口 ${current_port} -> ${local_ip} -> ${public_ip}" >> "$output_file"
+            echo "$url" >> "$output_file"
+            echo "" >> "$output_file"
         done
+        
+        msg ok "链接信息已保存到 ${output_file}"
 
         # 修改 config.json
         # 构建 outbounds
