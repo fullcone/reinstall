@@ -2842,12 +2842,12 @@ collect_netconf() {
     echo "Primary IPv6 Address: $ipv6_addr"
     echo "Primary IPv6 Gateway: $ipv6_gateway"
     echo "---"
-    echo "All Network Configurations (${#netconf_list[@]} entries):"
-    for entry in "${netconf_list[@]}"; do
-        IFS='|' read -r mac v4addr v4gw v6addr v6gw <<<"$entry"
-        echo "  MAC: $mac"
-        [ -n "$v4addr" ] && echo "    IPv4: $v4addr via $v4gw"
-        [ -n "$v6addr" ] && echo "    IPv6: $v6addr via $v6gw"
+    echo "All Network Configurations (${#eth_mac[@]} interfaces):"
+    for ethx in "${!eth_mac[@]}"; do
+        echo "  Interface: $ethx"
+        echo "    MAC: ${eth_mac[$ethx]}"
+        [ -n "${eth_ipv4_addrs[$ethx]}" ] && echo "    IPv4: ${eth_ipv4_addrs[$ethx]} via ${eth_ipv4_gateway[$ethx]}"
+        [ -n "${eth_ipv6_addrs[$ethx]}" ] && echo "    IPv6: ${eth_ipv6_addrs[$ethx]} via ${eth_ipv6_gateway[$ethx]}"
     done
     echo
 }
