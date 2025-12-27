@@ -495,9 +495,11 @@ main() {
             if [[ -n "$public_ip" ]]; then
                 # 替换 @IP: 部分
                 url=$(echo "$url" | sed "s/@[0-9.]*:/@${public_ip}:/g")
-                # 替换末尾别名中的 IP（格式如 #xxx-tcp-1.2.3.4 或 #xxx-1.2.3.4）
-                # 匹配 # 后面任意字符，直到最后一个 - 后面的 IP 地址
-                url=$(echo "$url" | sed "s/\(#.*-\)[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}$/\1${public_ip}/")
+                # 替换末尾别名中的 IP（格式如 #wcd777666-tcp-8.209.234.85）
+                # 先提取 # 之前的部分，再提取别名前缀（去掉最后的IP），最后拼接新IP
+                url_prefix=$(echo "$url" | sed 's/#.*//')
+                url_suffix=$(echo "$url" | grep -o '#.*' | sed 's/-[0-9.]*$//')
+                url="${url_prefix}${url_suffix}-${public_ip}"
             fi
             
             # 输出到终端
