@@ -53,6 +53,17 @@ if defined id (
         netsh interface ipv4 set address %id% static %ipv4_addr% gateway=%ipv4_gateway% gwmetric=0
     )
 
+    rem 配置 IPv4 Secondary IP 地址
+    if defined ipv4_secondary_count (
+        setlocal EnableDelayedExpansion
+        for /L %%i in (1,1,%ipv4_secondary_count%) do (
+            if defined ipv4_secondary_addr%%i (
+                netsh interface ipv4 add address %id% !ipv4_secondary_addr%%i!
+            )
+        )
+        endlocal
+    )
+
     rem 配置静态 IPv4 DNS 服务器
     for %%i in (1, 2) do (
         if defined ipv4_dns%%i (
@@ -75,6 +86,17 @@ if defined id (
     if defined ipv6_addr if defined ipv6_gateway (
         netsh interface ipv6 set address %id% %ipv6_addr%
         netsh interface ipv6 add route prefix=::/0 %id% %ipv6_gateway%
+    )
+
+    rem 配置 IPv6 Secondary IP 地址
+    if defined ipv6_secondary_count (
+        setlocal EnableDelayedExpansion
+        for /L %%i in (1,1,%ipv6_secondary_count%) do (
+            if defined ipv6_secondary_addr%%i (
+                netsh interface ipv6 add address %id% !ipv6_secondary_addr%%i!
+            )
+        )
+        endlocal
     )
 
     rem 配置 IPv6 DNS 服务器

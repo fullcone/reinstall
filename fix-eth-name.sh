@@ -220,8 +220,8 @@ fix_ifupdown() {
                 fi
             elif [[ "$line" = *" dev e"* ]]; then
                 if [ -n "$ethx" ]; then
-                    # awk 会去除前面的空格
-                    line=$(echo "$line" | sed -E "s/[^ ]*$/$ethx/")
+                    # 替换 dev 后面的网卡名（可能不在行尾）
+                    line=$(echo "$line" | sed -E "s/( dev )eth[0-9]+/\1$ethx/g")
                 fi
             fi
             if ! $del_this_line; then

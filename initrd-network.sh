@@ -6,11 +6,15 @@
 # autoconf  自动配置地址，依赖 accept_ra
 
 mac_addr=$1
-ipv4_addr=$2
+ipv4_addrs=$2      # 支持多IP，用逗号分隔
 ipv4_gateway=$3
-ipv6_addr=$4
+ipv6_addrs=$4      # 支持多IP，用逗号分隔
 ipv6_gateway=$5
 is_in_china=$6
+
+# 兼容旧格式：取第一个IP作为主IP
+ipv4_addr=$(echo "$ipv4_addrs" | cut -d',' -f1)
+ipv6_addr=$(echo "$ipv6_addrs" | cut -d',' -f1)
 
 DHCP_TIMEOUT=15
 DNS_FILE_TIMEOUT=5
@@ -138,9 +142,17 @@ is_have_ipv6_dns() {
 
 add_missing_ipv4_config() {
     if [ -n "$ipv4_addr" ] && [ -n "$ipv4_gateway" ]; then
-        if ! is_have_ipv4_addr; then
-            ip -4 addr add "$ipv4_addr" dev "$ethx"
-        fi
+        # 添加所有 IPv4 地址
+        # 使用子 shell 避免 IFS 影响外部
+        echo "$ipv4_addrs" | tr ',' '\n' | while read -r addr; do
+            if [ -n "$addr" ]; then
+                # 检查该IP是否已存在
+                ip_only=$(echo "$addr" | cut -d'/' -f1)
+                if ! ip -4 addr show dev "$ethx" | grep -q "inet $ip_only"; then
+                    ip -4 addr add "$addr" dev "$ethx"
+                fi
+            fi
+        done
 
         if ! is_have_ipv4_gateway; then
             # 如果 dhcp 无法设置onlink网关，那么在这里设置
@@ -157,9 +169,16 @@ add_missing_ipv4_config() {
 
 add_missing_ipv6_config() {
     if [ -n "$ipv6_addr" ] && [ -n "$ipv6_gateway" ]; then
-        if ! is_have_ipv6_addr; then
-            ip -6 addr add "$ipv6_addr" dev "$ethx"
-        fi
+        # 添加所有 IPv6 地址
+        echo "$ipv6_addrs" | tr ',' '\n' | while read -r addr; do
+            if [ -n "$addr" ]; then
+                # 检查该IP是否已存在
+                ip_only=$(echo "$addr" | cut -d'/' -f1)
+                if ! ip -6 addr show dev "$ethx" | grep -q "inet6 $ip_only"; then
+                    ip -6 addr add "$addr" dev "$ethx"
+                fi
+            fi
+        done
 
         if ! is_have_ipv6_gateway; then
             # 如果 dhcp 无法设置onlink网关，那么在这里设置
@@ -503,8 +522,19 @@ $is_in_china && echo 1 >"$netconf/is_in_china" || echo 0 >"$netconf/is_in_china"
 echo "$ethx" >"$netconf/ethx"
 echo "$mac_addr" >"$netconf/mac_addr"
 echo "$ipv4_addr" >"$netconf/ipv4_addr"
+echo "$ipv4_addrs" >"$netconf/ipv4_addrs"  # 保存所有IPv4地址
 echo "$ipv4_gateway" >"$netconf/ipv4_gateway"
 echo "$ipv6_addr" >"$netconf/ipv6_addr"
+echo "$ipv6_addrs" >"$netconf/ipv6_addrs"  # 保存所有IPv6地址
 echo "$ipv6_gateway" >"$netconf/ipv6_gateway"
 $ipv4_has_internet && echo 1 >"$netconf/ipv4_has_internet" || echo 0 >"$netconf/ipv4_has_internet"
 $ipv6_has_internet && echo 1 >"$netconf/ipv6_has_internet" || echo 0 >"$netconf/ipv6_has_internet"
+
+# 保存路由表ID（用于策略路由）
+# 从1001开始，每个网卡递增
+if [ ! -f /dev/netconf/.next_table_id ]; then
+    echo 1001 >/dev/netconf/.next_table_id
+fi
+table_id=$(cat /dev/netconf/.next_table_id)
+echo "$table_id" >"$netconf/table_id"
+echo $((table_id + 1)) >/dev/netconf/.next_table_id

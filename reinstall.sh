@@ -3,9 +3,9 @@
 # shellcheck disable=SC2086
 
 set -eE
-confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
-# confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/bin456789/reinstall/main
+confhome=https://raw.githubusercontent.com/fullcone/reinstall/main
+confhome_cn=https://raw.githubusercontent.com/fullcone/reinstall/main
+# confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/fullcone/reinstall/main
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
@@ -2523,8 +2523,47 @@ is_found_ipv6_netconf() {
     [ -n "$ipv6_mac" ] && [ -n "$ipv6_addr" ] && [ -n "$ipv6_gateway" ]
 }
 
-# TODO: 单网卡多IP
+# 多网卡多IP支持
+# 数组格式: netconf_list[i]="mac|ipv4_addr|ipv4_gateway|ipv6_addr|ipv6_gateway"
+declare -a netconf_list=()
+# 全局关联数组，用于存储每个网卡的详细信息
+declare -A eth_ipv4_gateway=()
+declare -A eth_ipv6_gateway=()
+declare -A eth_mac=()
+declare -A eth_ipv4_addrs=()
+declare -A eth_ipv6_addrs=()
+
+add_netconf_entry() {
+    local mac=$1
+    local ipv4_addr=$2
+    local ipv4_gateway=$3
+    local ipv6_addr=$4
+    local ipv6_gateway=$5
+
+    # 检查是否已存在相同的条目（基于mac和ip地址）
+    local entry="$mac|$ipv4_addr|$ipv4_gateway|$ipv6_addr|$ipv6_gateway"
+    local found=false
+    for existing in "${netconf_list[@]}"; do
+        if [ "$existing" = "$entry" ]; then
+            found=true
+            break
+        fi
+    done
+
+    if ! $found; then
+        netconf_list+=("$entry")
+    fi
+}
+
 collect_netconf() {
+    # 清空全局数组
+    netconf_list=()
+    eth_ipv4_gateway=()
+    eth_ipv6_gateway=()
+    eth_mac=()
+    eth_ipv4_addrs=()
+    eth_ipv6_addrs=()
+
     if is_in_windows; then
         convert_net_str_to_array() {
             config=$1
@@ -2672,6 +2711,113 @@ collect_netconf() {
         # ip -6 route show default
         # default nhid 4011550343 via fe80::fc00:5ff:fe3d:2714 dev enp1s0 proto ra metric 1024 expires 1504sec pref medium
 
+        # 获取所有 IPv4 默认路由（主路由表）
+        while read -r line; do
+            if via_gateway_dev_ethx=$(grep -Ewo 'via [^ ]+ dev [^ ]+' <<<"$line"); then
+                read -r _ gateway _ ethx <<<"$via_gateway_dev_ethx"
+                if [ -z "${eth_ipv4_gateway[$ethx]}" ]; then
+                    eth_ipv4_gateway[$ethx]="$gateway"
+                    eth_mac[$ethx]="$(ip link show dev $ethx | grep link/ether | head -1 | awk '{print $2}')"
+                fi
+            fi
+        done < <(ip -4 route show default)
+
+        # 获取所有 IPv6 默认路由（主路由表）
+        while read -r line; do
+            if via_gateway_dev_ethx=$(grep -Ewo 'via [^ ]+ dev [^ ]+' <<<"$line"); then
+                read -r _ gateway _ ethx <<<"$via_gateway_dev_ethx"
+                if [ -z "${eth_ipv6_gateway[$ethx]}" ]; then
+                    eth_ipv6_gateway[$ethx]="$gateway"
+                    if [ -z "${eth_mac[$ethx]}" ]; then
+                        eth_mac[$ethx]="$(ip link show dev $ethx | grep link/ether | head -1 | awk '{print $2}')"
+                    fi
+                fi
+            fi
+        done < <(ip -6 route show default)
+
+        # 检查策略路由表中的默认路由
+        # ip rule show 输出格式: 0: from all lookup local
+        # 查找 from <ip> lookup <table> 规则，然后从对应表中获取网关
+        while read -r rule; do
+            if [[ "$rule" =~ from\ ([0-9.]+)\ lookup\ ([0-9]+) ]]; then
+                local src_ip="${BASH_REMATCH[1]}"
+                local table="${BASH_REMATCH[2]}"
+                # 从策略路由表获取网关
+                local gw_info=$(ip -4 route show default table "$table" 2>/dev/null | grep -Ewo 'via [^ ]+ dev [^ ]+' | head -1)
+                if [ -n "$gw_info" ]; then
+                    read -r _ gateway _ ethx <<<"$gw_info"
+                    if [ -z "${eth_ipv4_gateway[$ethx]}" ]; then
+                        eth_ipv4_gateway[$ethx]="$gateway"
+                        if [ -z "${eth_mac[$ethx]}" ]; then
+                            eth_mac[$ethx]="$(ip link show dev $ethx | grep link/ether | head -1 | awk '{print $2}')"
+                        fi
+                    fi
+                fi
+            fi
+        done < <(ip -4 rule show 2>/dev/null)
+
+        # 检查 IPv6 策略路由
+        while read -r rule; do
+            if [[ "$rule" =~ from\ ([0-9a-f:]+)\ lookup\ ([0-9]+) ]]; then
+                local src_ip="${BASH_REMATCH[1]}"
+                local table="${BASH_REMATCH[2]}"
+                local gw_info=$(ip -6 route show default table "$table" 2>/dev/null | grep -Ewo 'via [^ ]+ dev [^ ]+' | head -1)
+                if [ -n "$gw_info" ]; then
+                    read -r _ gateway _ ethx <<<"$gw_info"
+                    if [ -z "${eth_ipv6_gateway[$ethx]}" ]; then
+                        eth_ipv6_gateway[$ethx]="$gateway"
+                        if [ -z "${eth_mac[$ethx]}" ]; then
+                            eth_mac[$ethx]="$(ip link show dev $ethx | grep link/ether | head -1 | awk '{print $2}')"
+                        fi
+                    fi
+                fi
+            fi
+        done < <(ip -6 rule show 2>/dev/null)
+
+        # 遍历所有有网关的网卡，收集所有IP地址
+        for ethx in "${!eth_mac[@]}"; do
+            local mac="${eth_mac[$ethx]}"
+            local gw4="${eth_ipv4_gateway[$ethx]}"
+            local gw6="${eth_ipv6_gateway[$ethx]}"
+
+            # 收集该网卡的所有 IPv4 地址（包括 secondary）
+            if [ -n "$gw4" ]; then
+                local ipv4_list=""
+                while read -r addr; do
+                    if [ -n "$addr" ]; then
+                        if [ -z "$ipv4_list" ]; then
+                            ipv4_list="$addr"
+                        else
+                            ipv4_list="$ipv4_list,$addr"
+                        fi
+                    fi
+                done < <(ip -4 -o addr show scope global dev $ethx | awk '{print $4}')
+                eth_ipv4_addrs[$ethx]="$ipv4_list"
+                # 添加到 netconf_list（使用第一个IP作为主IP）
+                local first_ip=$(echo "$ipv4_list" | cut -d',' -f1)
+                add_netconf_entry "$mac" "$first_ip" "$gw4" "" ""
+            fi
+
+            # 收集该网卡的所有 IPv6 地址（排除临时地址）
+            if [ -n "$gw6" ]; then
+                local ipv6_list=""
+                while read -r addr; do
+                    if [ -n "$addr" ]; then
+                        if [ -z "$ipv6_list" ]; then
+                            ipv6_list="$addr"
+                        else
+                            ipv6_list="$ipv6_list,$addr"
+                        fi
+                    fi
+                done < <(ip -6 -o addr show scope global dev $ethx | grep -v temporary | awk '{print $4}')
+                eth_ipv6_addrs[$ethx]="$ipv6_list"
+                # 添加到 netconf_list（使用第一个IP作为主IP）
+                local first_ip=$(echo "$ipv6_list" | cut -d',' -f1)
+                add_netconf_entry "$mac" "" "" "$first_ip" "$gw6"
+            fi
+        done
+
+        # 兼容旧逻辑：设置第一个网卡的配置作为默认值
         for v in 4 6; do
             if via_gateway_dev_ethx=$(ip -$v route show default | grep -Ewo 'via [^ ]+ dev [^ ]+' | head -1 | grep .); then
                 read -r _ gateway _ ethx <<<"$via_gateway_dev_ethx"
@@ -2688,13 +2834,21 @@ collect_netconf() {
     fi
 
     info "Network Info"
-    echo "IPv4 MAC: $ipv4_mac"
-    echo "IPv4 Address: $ipv4_addr"
-    echo "IPv4 Gateway: $ipv4_gateway"
+    echo "Primary IPv4 MAC: $ipv4_mac"
+    echo "Primary IPv4 Address: $ipv4_addr"
+    echo "Primary IPv4 Gateway: $ipv4_gateway"
     echo "---"
-    echo "IPv6 MAC: $ipv6_mac"
-    echo "IPv6 Address: $ipv6_addr"
-    echo "IPv6 Gateway: $ipv6_gateway"
+    echo "Primary IPv6 MAC: $ipv6_mac"
+    echo "Primary IPv6 Address: $ipv6_addr"
+    echo "Primary IPv6 Gateway: $ipv6_gateway"
+    echo "---"
+    echo "All Network Configurations (${#netconf_list[@]} entries):"
+    for entry in "${netconf_list[@]}"; do
+        IFS='|' read -r mac v4addr v4gw v6addr v6gw <<<"$entry"
+        echo "  MAC: $mac"
+        [ -n "$v4addr" ] && echo "    IPv4: $v4addr via $v4gw"
+        [ -n "$v6addr" ] && echo "    IPv6: $v6addr via $v6gw"
+    done
     echo
 }
 
@@ -3567,14 +3721,67 @@ get_ip_conf_cmd() {
     is_in_china && is_in_china=true || is_in_china=false
 
     sh=/initrd-network.sh
-    if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
-        echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' '$is_in_china'"
+
+    # 如果有多网卡配置，使用新的多网卡逻辑
+    if [ ${#netconf_list[@]} -gt 0 ]; then
+        # 按MAC地址分组，合并同一网卡的IPv4和IPv6配置
+        declare -A mac_v4addrs=()
+        declare -A mac_v4gw=()
+        declare -A mac_v6addrs=()
+        declare -A mac_v6gw=()
+
+        for entry in "${netconf_list[@]}"; do
+            IFS='|' read -r mac v4addr v4gw v6addr v6gw <<<"$entry"
+            if [ -n "$v4addr" ] && [ -z "${mac_v4addrs[$mac]}" ]; then
+                # 从 eth_ipv4_addrs 获取所有IP
+                for ethx in "${!eth_mac[@]}"; do
+                    if [ "${eth_mac[$ethx]}" = "$mac" ]; then
+                        mac_v4addrs[$mac]="${eth_ipv4_addrs[$ethx]}"
+                        mac_v4gw[$mac]="$v4gw"
+                        break
+                    fi
+                done
+            fi
+            if [ -n "$v6addr" ] && [ -z "${mac_v6addrs[$mac]}" ]; then
+                # 从 eth_ipv6_addrs 获取所有IP
+                for ethx in "${!eth_mac[@]}"; do
+                    if [ "${eth_mac[$ethx]}" = "$mac" ]; then
+                        mac_v6addrs[$mac]="${eth_ipv6_addrs[$ethx]}"
+                        mac_v6gw[$mac]="$v6gw"
+                        break
+                    fi
+                done
+            fi
+        done
+
+        # 为每个MAC地址生成配置命令
+        declare -A processed_macs=()
+        for mac in "${!mac_v4addrs[@]}" "${!mac_v6addrs[@]}"; do
+            # 去重
+            [ -z "$mac" ] && continue
+            [ -n "${processed_macs[$mac]}" ] && continue
+            processed_macs[$mac]=1
+
+            local v4="${mac_v4addrs[$mac]}"
+            local v4gw="${mac_v4gw[$mac]}"
+            local v6="${mac_v6addrs[$mac]}"
+            local v6gw="${mac_v6gw[$mac]}"
+
+            if [ -n "$v4" ] || [ -n "$v6" ]; then
+                echo "'$sh' '$mac' '$v4' '$v4gw' '$v6' '$v6gw' '$is_in_china'"
+            fi
+        done
     else
-        if is_found_ipv4_netconf; then
-            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' '$is_in_china'"
-        fi
-        if is_found_ipv6_netconf; then
-            echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' '$is_in_china'"
+        # 兼容旧逻辑
+        if is_found_ipv4_netconf && is_found_ipv6_netconf && [ "$ipv4_mac" = "$ipv6_mac" ]; then
+            echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '$ipv6_addr' '$ipv6_gateway' '$is_in_china'"
+        else
+            if is_found_ipv4_netconf; then
+                echo "'$sh' '$ipv4_mac' '$ipv4_addr' '$ipv4_gateway' '' '' '$is_in_china'"
+            fi
+            if is_found_ipv6_netconf; then
+                echo "'$sh' '$ipv6_mac' '' '' '$ipv6_addr' '$ipv6_gateway' '$is_in_china'"
+            fi
         fi
     fi
 }

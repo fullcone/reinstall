@@ -1059,11 +1059,32 @@ EOF
         elif is_staticv4; then
             get_netconf_to ipv4_addr
             get_netconf_to ipv4_gateway
+            # 获取所有IPv4地址（如果有）
+            local ipv4_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv4_addrs ]; then
+                ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)
+            fi
+            # 使用第一个IP作为主地址
+            local primary_ipv4=$(echo "$ipv4_addrs" | cut -d',' -f1)
+            [ -z "$primary_ipv4" ] && primary_ipv4="$ipv4_addr"
             cat <<EOF >>$conf_file
 iface $ethx inet static
-    address $ipv4_addr
+    address $primary_ipv4
     gateway $ipv4_gateway
 EOF
+            # 添加 secondary IP（跳过第一个）
+            if [ -n "$ipv4_addrs" ]; then
+                # 获取除第一个以外的所有IP
+                local secondary_ips=$(echo "$ipv4_addrs" | cut -d',' -f2-)
+                if [ "$secondary_ips" != "$ipv4_addrs" ] && [ -n "$secondary_ips" ]; then
+                    echo "$secondary_ips" | tr ',' '\n' | while read -r addr; do
+                        if [ -n "$addr" ]; then
+                            echo "    post-up ip -4 addr add $addr dev $ethx" >>$conf_file
+                            echo "    pre-down ip -4 addr del $addr dev $ethx" >>$conf_file
+                        fi
+                    done
+                fi
+            fi
             # dns
             if list=$(get_current_dns 4); then
                 for dns in $list; do
@@ -1093,11 +1114,31 @@ EOF
         elif is_staticv6; then
             get_netconf_to ipv6_addr
             get_netconf_to ipv6_gateway
+            # 获取所有IPv6地址（如果有）
+            local ipv6_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv6_addrs ]; then
+                ipv6_addrs=$(cat /dev/netconf/$ethx/ipv6_addrs)
+            fi
+            # 使用第一个IP作为主地址
+            local primary_ipv6=$(echo "$ipv6_addrs" | cut -d',' -f1)
+            [ -z "$primary_ipv6" ] && primary_ipv6="$ipv6_addr"
             cat <<EOF >>$conf_file
 iface $ethx inet6 static
-    address $ipv6_addr
+    address $primary_ipv6
     gateway $ipv6_gateway
 EOF
+            # 添加 secondary IP（跳过第一个）
+            if [ -n "$ipv6_addrs" ]; then
+                local secondary_ips=$(echo "$ipv6_addrs" | cut -d',' -f2-)
+                if [ "$secondary_ips" != "$ipv6_addrs" ] && [ -n "$secondary_ips" ]; then
+                    echo "$secondary_ips" | tr ',' '\n' | while read -r addr; do
+                        if [ -n "$addr" ]; then
+                            echo "    post-up ip -6 addr add $addr dev $ethx" >>$conf_file
+                            echo "    pre-down ip -6 addr del $addr dev $ethx" >>$conf_file
+                        fi
+                    done
+                fi
+            fi
             # debian 9
             # ipv4 支持静态 onlink 网关
             # ipv6 不支持静态 onlink 网关，需使用 post-up 添加，未测试动态
@@ -1148,6 +1189,64 @@ EOF
                 cat <<EOF >>$conf_file
     autoconf 0
 EOF
+            fi
+        fi
+
+        # 策略路由配置（多网卡场景）
+        # 只有当有多个网卡时才配置策略路由
+        eth_count=$(ls -d /dev/netconf/*/ 2>/dev/null | wc -l)
+        if [ "$eth_count" -gt 1 ]; then
+            table_id=""
+            if [ -f /dev/netconf/$ethx/table_id ]; then
+                table_id=$(cat /dev/netconf/$ethx/table_id)
+            fi
+
+            if [ -n "$table_id" ]; then
+                # IPv4 策略路由
+                if is_staticv4; then
+                    get_netconf_to ipv4_gateway
+                    # 添加路由表中的默认路由
+                    echo "    post-up ip -4 route add default via $ipv4_gateway dev $ethx table $table_id" >>$conf_file
+                    echo "    pre-down ip -4 route del default via $ipv4_gateway dev $ethx table $table_id 2>/dev/null || true" >>$conf_file
+
+                    # 为每个 IPv4 地址添加策略路由规则
+                    ipv4_addrs_file=""
+                    if [ -f /dev/netconf/$ethx/ipv4_addrs ]; then
+                        ipv4_addrs_file=$(cat /dev/netconf/$ethx/ipv4_addrs)
+                    fi
+                    [ -z "$ipv4_addrs_file" ] && ipv4_addrs_file="$ipv4_addr"
+
+                    echo "$ipv4_addrs_file" | tr ',' '\n' | while read -r addr; do
+                        if [ -n "$addr" ]; then
+                            ip_only=$(echo "$addr" | cut -d'/' -f1)
+                            echo "    post-up ip -4 rule add from $ip_only lookup $table_id" >>$conf_file
+                            echo "    pre-down ip -4 rule del from $ip_only lookup $table_id 2>/dev/null || true" >>$conf_file
+                        fi
+                    done
+                fi
+
+                # IPv6 策略路由
+                if is_staticv6; then
+                    get_netconf_to ipv6_gateway
+                    # 添加路由表中的默认路由
+                    echo "    post-up ip -6 route add default via $ipv6_gateway dev $ethx table $table_id" >>$conf_file
+                    echo "    pre-down ip -6 route del default via $ipv6_gateway dev $ethx table $table_id 2>/dev/null || true" >>$conf_file
+
+                    # 为每个 IPv6 地址添加策略路由规则
+                    ipv6_addrs_file=""
+                    if [ -f /dev/netconf/$ethx/ipv6_addrs ]; then
+                        ipv6_addrs_file=$(cat /dev/netconf/$ethx/ipv6_addrs)
+                    fi
+                    [ -z "$ipv6_addrs_file" ] && ipv6_addrs_file="$ipv6_addr"
+
+                    echo "$ipv6_addrs_file" | tr ',' '\n' | while read -r addr; do
+                        if [ -n "$addr" ]; then
+                            ip_only=$(echo "$addr" | cut -d'/' -f1)
+                            echo "    post-up ip -6 rule add from $ip_only lookup $table_id" >>$conf_file
+                            echo "    pre-down ip -6 rule del from $ip_only lookup $table_id 2>/dev/null || true" >>$conf_file
+                        fi
+                    done
+                fi
             fi
         fi
     done
@@ -1212,13 +1311,29 @@ EOF
         if is_staticv4; then
             get_netconf_to ipv4_addr
             get_netconf_to ipv4_gateway
-            IFS=/ read -r address prefix < <(echo "$ipv4_addr")
+            # 获取所有IPv4地址
+            local ipv4_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv4_addrs ]; then
+                ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)
+            fi
+            [ -z "$ipv4_addrs" ] && ipv4_addrs="$ipv4_addr"
+
             cat <<EOF >>$conf_file
   interfaces.$ethx.ipv4.addresses = [
+EOF
+            echo "$ipv4_addrs" | tr ',' '\n' | while read -r addr; do
+                if [ -n "$addr" ]; then
+                    address=$(echo "$addr" | cut -d'/' -f1)
+                    prefix=$(echo "$addr" | cut -d'/' -f2)
+                    cat <<EOF >>$conf_file
     {
       address = "$address";
       prefixLength = $prefix;
     }
+EOF
+                fi
+            done
+            cat <<EOF >>$conf_file
   ];
   defaultGateway = {
     address = "$ipv4_gateway";
@@ -1231,13 +1346,29 @@ EOF
         if is_staticv6; then
             get_netconf_to ipv6_addr
             get_netconf_to ipv6_gateway
-            IFS=/ read -r address prefix < <(echo "$ipv6_addr")
+            # 获取所有IPv6地址
+            local ipv6_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv6_addrs ]; then
+                ipv6_addrs=$(cat /dev/netconf/$ethx/ipv6_addrs)
+            fi
+            [ -z "$ipv6_addrs" ] && ipv6_addrs="$ipv6_addr"
+
             cat <<EOF >>$conf_file
   interfaces.$ethx.ipv6.addresses = [
+EOF
+            echo "$ipv6_addrs" | tr ',' '\n' | while read -r addr; do
+                if [ -n "$addr" ]; then
+                    address=$(echo "$addr" | cut -d'/' -f1)
+                    prefix=$(echo "$addr" | cut -d'/' -f2)
+                    cat <<EOF >>$conf_file
     {
       address = "$address";
       prefixLength = $prefix;
     }
+EOF
+                fi
+            done
+            cat <<EOF >>$conf_file
   ];
   defaultGateway6 = {
     address = "$ipv6_gateway";
@@ -2793,20 +2924,35 @@ create_cloud_init_network_config() {
             need_set_dns4=true
             get_netconf_to ipv4_addr
             get_netconf_to ipv4_gateway
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {
-                    \"type\": \"static\",
-                    \"address\": \"$ipv4_addr\",
-                    \"gateway\": \"$ipv4_gateway\" }
-                    " $ci_file
+            # 获取所有IPv4地址
+            local ipv4_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv4_addrs ]; then
+                ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)
+            fi
+            [ -z "$ipv4_addrs" ] && ipv4_addrs="$ipv4_addr"
 
-            # 旧版 cloud-init 有 bug
-            # 有的版本会只从第一种配置中读取 dns，有的从第二种读取
-            # 因此写两种配置
-            # https://github.com/canonical/cloud-init/commit/1b8030e0c7fd6fbff7e38ad1e3e6266ae50c83a5
-            for cur in $(get_current_dns 4); do
-                yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
-            done
-            subnet_id=$((subnet_id + 1))
+            # 添加所有IPv4地址
+            # 使用临时文件避免子 shell 变量问题
+            echo "$ipv4_addrs" | tr ',' '\n' > /tmp/ipv4_addrs_list
+            while read -r addr; do
+                if [ -n "$addr" ]; then
+                    yq -i ".network.config[$config_id].subnets[$subnet_id] = {
+                            \"type\": \"static\",
+                            \"address\": \"$addr\",
+                            \"gateway\": \"$ipv4_gateway\" }
+                            " $ci_file
+
+                    # 旧版 cloud-init 有 bug
+                    # 有的版本会只从第一种配置中读取 dns，有的从第二种读取
+                    # 因此写两种配置
+                    # https://github.com/canonical/cloud-init/commit/1b8030e0c7fd6fbff7e38ad1e3e6266ae50c83a5
+                    for cur in $(get_current_dns 4); do
+                        yq -i ".network.config[$config_id].subnets[$subnet_id].dns_nameservers += [\"$cur\"]" $ci_file
+                    done
+                    subnet_id=$((subnet_id + 1))
+                fi
+            done < /tmp/ipv4_addrs_list
+            rm -f /tmp/ipv4_addrs_list
         fi
 
         # ipv6
@@ -2843,11 +2989,26 @@ create_cloud_init_network_config() {
             else
                 type_ipv6_static=static
             fi
-            yq -i ".network.config[$config_id].subnets[$subnet_id] = {
-                    \"type\": \"$type_ipv6_static\",
-                    \"address\": \"$ipv6_addr\",
-                    \"gateway\": \"$ipv6_gateway\" }
-                    " $ci_file
+            # 获取所有IPv6地址
+            local ipv6_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv6_addrs ]; then
+                ipv6_addrs=$(cat /dev/netconf/$ethx/ipv6_addrs)
+            fi
+            [ -z "$ipv6_addrs" ] && ipv6_addrs="$ipv6_addr"
+
+            # 添加所有IPv6地址
+            echo "$ipv6_addrs" | tr ',' '\n' > /tmp/ipv6_addrs_list
+            while read -r addr; do
+                if [ -n "$addr" ]; then
+                    yq -i ".network.config[$config_id].subnets[$subnet_id] = {
+                            \"type\": \"$type_ipv6_static\",
+                            \"address\": \"$addr\",
+                            \"gateway\": \"$ipv6_gateway\" }
+                            " $ci_file
+                    subnet_id=$((subnet_id + 1))
+                fi
+            done < /tmp/ipv6_addrs_list
+            rm -f /tmp/ipv6_addrs_list
         fi
         # 无法设置 autoconf = false ?
         if should_disable_accept_ra; then
@@ -3322,6 +3483,71 @@ create_network_manager_config() {
         -e '/^org\.freedesktop\.NetworkManager\.origin=cloud-init/d' \
         /out/etc/NetworkManager/system-connections/cloud-init-eth*.nmconnection
     del_head_empty_lines_inplace /out/etc/NetworkManager/system-connections/cloud-init-eth*.nmconnection
+
+    # 添加策略路由配置（多网卡场景）
+    local eth_count=$(ls -d /dev/netconf/*/ 2>/dev/null | wc -l)
+    if [ "$eth_count" -gt 1 ]; then
+        for ethx in $(get_eths); do
+            local nm_file="/out/etc/NetworkManager/system-connections/cloud-init-$ethx.nmconnection"
+            [ -f "$nm_file" ] || continue
+
+            local table_id=""
+            [ -f /dev/netconf/$ethx/table_id ] && table_id=$(cat /dev/netconf/$ethx/table_id)
+            [ -z "$table_id" ] && continue
+
+            local rule_idx=1
+
+            # IPv4 策略路由
+            if is_staticv4; then
+                get_netconf_to ipv4_gateway
+                # 添加路由表中的默认路由
+                if ! grep -q '^\[ipv4\]' "$nm_file"; then
+                    echo -e "\n[ipv4]" >>"$nm_file"
+                fi
+                # 添加 route 到路由表
+                sed -i "/^\[ipv4\]/a route1=0.0.0.0/0,$ipv4_gateway,$table_id" "$nm_file"
+
+                # 为每个 IPv4 地址添加策略路由规则
+                local ipv4_addrs=""
+                [ -f /dev/netconf/$ethx/ipv4_addrs ] && ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)
+                [ -z "$ipv4_addrs" ] && ipv4_addrs="$ipv4_addr"
+
+                local IFS_OLD="$IFS"
+                IFS=','
+                for addr in $ipv4_addrs; do
+                    [ -z "$addr" ] && continue
+                    local ip_only=$(echo "$addr" | cut -d'/' -f1)
+                    sed -i "/^\[ipv4\]/a routing-rule${rule_idx}=priority 100 from $ip_only table $table_id" "$nm_file"
+                    rule_idx=$((rule_idx + 1))
+                done
+                IFS="$IFS_OLD"
+            fi
+
+            # IPv6 策略路由
+            rule_idx=1
+            if is_staticv6; then
+                get_netconf_to ipv6_gateway
+                if ! grep -q '^\[ipv6\]' "$nm_file"; then
+                    echo -e "\n[ipv6]" >>"$nm_file"
+                fi
+                sed -i "/^\[ipv6\]/a route1=::/0,$ipv6_gateway,$table_id" "$nm_file"
+
+                local ipv6_addrs=""
+                [ -f /dev/netconf/$ethx/ipv6_addrs ] && ipv6_addrs=$(cat /dev/netconf/$ethx/ipv6_addrs)
+                [ -z "$ipv6_addrs" ] && ipv6_addrs="$ipv6_addr"
+
+                local IFS_OLD="$IFS"
+                IFS=','
+                for addr in $ipv6_addrs; do
+                    [ -z "$addr" ] && continue
+                    local ip_only=$(echo "$addr" | cut -d'/' -f1)
+                    sed -i "/^\[ipv6\]/a routing-rule${rule_idx}=priority 100 from $ip_only table $table_id" "$nm_file"
+                    rule_idx=$((rule_idx + 1))
+                done
+                IFS="$IFS_OLD"
+            fi
+        done
+    fi
 
     cp /out/etc/NetworkManager/system-connections/cloud-init-eth*.nmconnection \
         $os_dir/etc/NetworkManager/system-connections/
@@ -4794,6 +5020,62 @@ EOF
                 # 清理
                 rm -rf $os_dir/net.cfg
             fi
+
+            # 添加策略路由配置（多网卡场景）
+            local eth_count=$(ls -d /dev/netconf/*/ 2>/dev/null | wc -l)
+            if [ "$eth_count" -gt 1 ]; then
+                local netplan_file="$os_dir/etc/netplan/50-cloud-init.yaml"
+                for ethx in $(get_eths); do
+                    local table_id=""
+                    [ -f /dev/netconf/$ethx/table_id ] && table_id=$(cat /dev/netconf/$ethx/table_id)
+                    [ -z "$table_id" ] && continue
+
+                    # IPv4 策略路由
+                    if is_staticv4; then
+                        get_netconf_to ipv4_gateway
+                        local ipv4_addrs=""
+                        [ -f /dev/netconf/$ethx/ipv4_addrs ] && ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)
+                        [ -z "$ipv4_addrs" ] && ipv4_addrs="$ipv4_addr"
+
+                        # 使用 yq 添加策略路由
+                        apk add yq-go 2>/dev/null || true
+                        # 添加路由表中的默认路由
+                        yq -i ".network.ethernets.$ethx.routes += [{\"to\": \"default\", \"via\": \"$ipv4_gateway\", \"table\": $table_id}]" "$netplan_file"
+
+                        # 为每个 IPv4 地址添加策略路由规则
+                        local IFS_OLD="$IFS"
+                        IFS=','
+                        for addr in $ipv4_addrs; do
+                            [ -z "$addr" ] && continue
+                            local ip_only=$(echo "$addr" | cut -d'/' -f1)
+                            yq -i ".network.ethernets.$ethx.routing-policy += [{\"from\": \"$ip_only\", \"table\": $table_id}]" "$netplan_file"
+                        done
+                        IFS="$IFS_OLD"
+                    fi
+
+                    # IPv6 策略路由
+                    if is_staticv6; then
+                        get_netconf_to ipv6_gateway
+                        local ipv6_addrs=""
+                        [ -f /dev/netconf/$ethx/ipv6_addrs ] && ipv6_addrs=$(cat /dev/netconf/$ethx/ipv6_addrs)
+                        [ -z "$ipv6_addrs" ] && ipv6_addrs="$ipv6_addr"
+
+                        yq -i ".network.ethernets.$ethx.routes += [{\"to\": \"default\", \"via\": \"$ipv6_gateway\", \"table\": $table_id}]" "$netplan_file"
+
+                        local IFS_OLD="$IFS"
+                        IFS=','
+                        for addr in $ipv6_addrs; do
+                            [ -z "$addr" ] && continue
+                            local ip_only=$(echo "$addr" | cut -d'/' -f1)
+                            yq -i ".network.ethernets.$ethx.routing-policy += [{\"from\": \"$ip_only\", \"table\": $table_id}]" "$netplan_file"
+                        done
+                        IFS="$IFS_OLD"
+                    fi
+                done
+                apk del yq-go 2>/dev/null || true
+                info "Netplan config with policy routing"
+                cat -n "$netplan_file" >&2
+            fi
         else
             # 避免删除 cloud-init 后 ifupdown 被 autoremove
             chroot $os_dir apt-mark manual ifupdown
@@ -5389,21 +5671,68 @@ create_win_set_netconf_script() {
         if is_staticv4; then
             get_netconf_to ipv4_addr
             get_netconf_to ipv4_gateway
+            # 获取所有IPv4地址
+            local ipv4_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv4_addrs ]; then
+                ipv4_addrs=$(cat /dev/netconf/$ethx/ipv4_addrs)
+            fi
+            [ -z "$ipv4_addrs" ] && ipv4_addrs="$ipv4_addr"
+
+            # 主IP
             cat <<EOF >>$target
 set ipv4_addr=$ipv4_addr
 set ipv4_gateway=$ipv4_gateway
 $(get_dns_list_for_win 4)
 EOF
+            # Secondary IPs（跳过第一个）
+            local idx=0
+            local secondary_ips=$(echo "$ipv4_addrs" | cut -d',' -f2-)
+            if [ "$secondary_ips" != "$ipv4_addrs" ] && [ -n "$secondary_ips" ]; then
+                echo "$secondary_ips" | tr ',' '\n' | while read -r addr; do
+                    if [ -n "$addr" ]; then
+                        idx=$((idx + 1))
+                        echo "set ipv4_secondary_addr$idx=$addr" >>$target
+                    fi
+                done
+            fi
+            # 计算 secondary IP 数量
+            if [ "$secondary_ips" != "$ipv4_addrs" ] && [ -n "$secondary_ips" ]; then
+                idx=$(echo "$secondary_ips" | tr ',' '\n' | grep -c .)
+            fi
+            echo "set ipv4_secondary_count=$idx" >>$target
         fi
 
         # 生成静态 ipv6 配置
         if is_staticv6; then
             get_netconf_to ipv6_addr
             get_netconf_to ipv6_gateway
+            # 获取所有IPv6地址
+            local ipv6_addrs=""
+            if [ -f /dev/netconf/$ethx/ipv6_addrs ]; then
+                ipv6_addrs=$(cat /dev/netconf/$ethx/ipv6_addrs)
+            fi
+            [ -z "$ipv6_addrs" ] && ipv6_addrs="$ipv6_addr"
+
             cat <<EOF >>$target
 set ipv6_addr=$ipv6_addr
 set ipv6_gateway=$ipv6_gateway
 EOF
+            # Secondary IPs（跳过第一个）
+            local idx=0
+            local secondary_ips=$(echo "$ipv6_addrs" | cut -d',' -f2-)
+            if [ "$secondary_ips" != "$ipv6_addrs" ] && [ -n "$secondary_ips" ]; then
+                echo "$secondary_ips" | tr ',' '\n' | while read -r addr; do
+                    if [ -n "$addr" ]; then
+                        idx=$((idx + 1))
+                        echo "set ipv6_secondary_addr$idx=$addr" >>$target
+                    fi
+                done
+            fi
+            # 计算 secondary IP 数量
+            if [ "$secondary_ips" != "$ipv6_addrs" ] && [ -n "$secondary_ips" ]; then
+                idx=$(echo "$secondary_ips" | tr ',' '\n' | grep -c .)
+            fi
+            echo "set ipv6_secondary_count=$idx" >>$target
         fi
 
         # 有 ipv6 但需设置 dns 的情况
