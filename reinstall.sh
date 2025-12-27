@@ -2782,16 +2782,8 @@ collect_netconf() {
 
             # 收集该网卡的所有 IPv4 地址（包括 secondary）
             if [ -n "$gw4" ]; then
-                local ipv4_list=""
-                while read -r addr; do
-                    if [ -n "$addr" ]; then
-                        if [ -z "$ipv4_list" ]; then
-                            ipv4_list="$addr"
-                        else
-                            ipv4_list="$ipv4_list,$addr"
-                        fi
-                    fi
-                done < <(ip -4 -o addr show scope global dev $ethx | awk '{print $4}')
+                # 直接用命令替换，避免子 shell 问题
+                local ipv4_list=$(ip -4 -o addr show scope global dev $ethx | awk '{print $4}' | tr '\n' ',' | sed 's/,$//')
                 eth_ipv4_addrs[$ethx]="$ipv4_list"
                 # 添加到 netconf_list（使用第一个IP作为主IP）
                 local first_ip=$(echo "$ipv4_list" | cut -d',' -f1)
@@ -2800,16 +2792,7 @@ collect_netconf() {
 
             # 收集该网卡的所有 IPv6 地址（排除临时地址）
             if [ -n "$gw6" ]; then
-                local ipv6_list=""
-                while read -r addr; do
-                    if [ -n "$addr" ]; then
-                        if [ -z "$ipv6_list" ]; then
-                            ipv6_list="$addr"
-                        else
-                            ipv6_list="$ipv6_list,$addr"
-                        fi
-                    fi
-                done < <(ip -6 -o addr show scope global dev $ethx | grep -v temporary | awk '{print $4}')
+                local ipv6_list=$(ip -6 -o addr show scope global dev $ethx | grep -v temporary | awk '{print $4}' | tr '\n' ',' | sed 's/,$//')
                 eth_ipv6_addrs[$ethx]="$ipv6_list"
                 # 添加到 netconf_list（使用第一个IP作为主IP）
                 local first_ip=$(echo "$ipv6_list" | cut -d',' -f1)
