@@ -4092,7 +4092,8 @@ for o in ci installer debug minimal allow-ping force-cn help \
     commit: \
     frpc-conf: frpc-config: frpc-toml: \
     force-boot-mode: \
-    force-old-windows-setup:; do
+    force-old-windows-setup: \
+    post-script:; do
     [ -n "$long_opts" ] && long_opts+=,
     long_opts+=$o
 done
