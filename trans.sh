@@ -5114,13 +5114,23 @@ EOF
             if [ "$eth_count" -gt 1 ]; then
                 local netplan_file="$os_dir/etc/netplan/50-cloud-init.yaml"
                 apk add yq-go 2>/dev/null || true
+                
+                local first_eth=""
+                local first_eth_gateway=""
+                
                 for ethx in $(get_eths); do
                     local table_id=""
                     [ -f /dev/netconf/$ethx/table_id ] && table_id=$(cat /dev/netconf/$ethx/table_id)
                     [ -z "$table_id" ] && continue
 
+                    # 记录第一个网卡和网关（用于 main 表默认路由）
+                    if [ -z "$first_eth" ]; then
+                        first_eth="$ethx"
+                        get_netconf_to ipv4_gateway
+                        first_eth_gateway="$ipv4_gateway"
+                    fi
+
                     # 多网卡场景：删除 cloud-init 生成的 main 表默认路由，避免冲突
-                    # 只保留策略路由表的默认路由
                     # 删除 routes 中没有 table 的 default 路由
                     yq -i "del(.network.ethernets.$ethx.routes[] | select(.to == \"default\" and .table == null))" "$netplan_file" 2>/dev/null || true
                     # 删除旧版 netplan 的 gateway4/gateway6（已废弃但 cloud-init 可能还会生成）
@@ -5165,6 +5175,13 @@ EOF
                         rm -f /tmp/policy_ipv6_list
                     fi
                 done
+                
+                # 给第一个网卡添加 main 表的默认路由（让系统本身能上网）
+                if [ -n "$first_eth" ] && [ -n "$first_eth_gateway" ]; then
+                    yq -i ".network.ethernets.$first_eth.routes += [{\"to\": \"default\", \"via\": \"$first_eth_gateway\"}]" "$netplan_file"
+                    info "Added main table default route via $first_eth_gateway dev $first_eth"
+                fi
+                
                 apk del yq-go 2>/dev/null || true
                 info "Netplan config with policy routing"
                 cat -n "$netplan_file" >&2
