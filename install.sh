@@ -333,6 +333,42 @@ main() {
         msg warn "${yellow}\e[4m提醒!!! 无法设置自动同步时间, 可能会影响使用 VMess 协议.${none}"
     }
 
+    # 自动配置 swap（小内存机器）
+    setup_swap() {
+        local mem_mb=$(free -m | awk '/^Mem:/{print $2}')
+        local swap_mb=$(free -m | awk '/^Swap:/{print $2}')
+        
+        # 内存小于 1GB 且没有 swap 时自动创建
+        if [[ $mem_mb -lt 1024 && $swap_mb -eq 0 ]]; then
+            msg warn "检测到小内存 (${mem_mb}MB)，自动配置 1GB swap..."
+            
+            # 检查是否已存在 swapfile
+            if [[ ! -f /swapfile ]]; then
+                fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+                chmod 600 /swapfile
+                mkswap /swapfile >/dev/null
+                swapon /swapfile
+                
+                # 添加到 fstab（如果不存在）
+                if ! grep -q '/swapfile' /etc/fstab; then
+                    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+                fi
+                
+                # 设置 swappiness
+                if ! grep -q 'vm.swappiness' /etc/sysctl.conf; then
+                    echo 'vm.swappiness=60' >> /etc/sysctl.conf
+                    sysctl -p >/dev/null 2>&1
+                fi
+                
+                msg ok "Swap 配置完成: $(free -h | awk '/^Swap:/{print $2}')"
+            else
+                swapon /swapfile 2>/dev/null
+                msg ok "Swap 已存在: $(free -h | awk '/^Swap:/{print $2}')"
+            fi
+        fi
+    }
+    setup_swap
+
     # install dependent pkg
     install_pkg $is_pkg &
 
@@ -459,8 +495,9 @@ main() {
             if [[ -n "$public_ip" ]]; then
                 # 替换 @IP: 部分
                 url=$(echo "$url" | sed "s/@[0-9.]*:/@${public_ip}:/g")
-                # 替换末尾别名中的 IP（格式如 #xxx-tcp-1.2.3.4）
-                url=$(echo "$url" | sed "s/#\(.*-\)[0-9.]*$/#\1${public_ip}/g")
+                # 替换末尾别名中的 IP（格式如 #xxx-tcp-1.2.3.4 或 #xxx-1.2.3.4）
+                # 匹配 # 后面任意字符，直到最后一个 - 后面的 IP 地址
+                url=$(echo "$url" | sed "s/\(#.*-\)[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}$/\1${public_ip}/")
             fi
             
             # 输出到终端
