@@ -461,8 +461,8 @@ main() {
 
     load core.sh
 
-    # 获取所有 172.19.0.* 的 IP 地址
-    local_ips=($(ip -4 addr show | grep -oP '172\.19\.0\.\d+' | sort -u))
+    # 获取所有 172.*.*.* 的 IP 地址
+    local_ips=($(ip -4 addr show | grep -oP '172\.\d+\.\d+\.\d+' | sort -u))
     ip_count=${#local_ips[@]}
 
     # 输出文件
@@ -470,7 +470,7 @@ main() {
     > "$output_file"  # 清空文件
 
     if [[ $ip_count -eq 0 ]]; then
-        msg warn "未检测到 172.19.0.* 的 IP，使用默认配置"
+        msg warn "未检测到 172 开头的 IP，使用默认配置"
         add reality
     else
         msg ok "检测到 ${ip_count} 个 IP: ${local_ips[*]}"
